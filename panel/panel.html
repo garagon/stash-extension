@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="panel.css">
+  <title>Stash</title>
+</head>
+<body>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="search-input" placeholder="Search..." autocomplete="off">
+    </div>
+    <div class="summary-menu">
+      <button id="summary-btn" class="btn-pill">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        Summary <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="summary-dropdown" id="summary-dropdown">
+        <button data-period="day">Today</button>
+        <button data-period="week">This Week</button>
+        <button data-period="month">This Month</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="permission-banner" class="banner-warn" style="display:none">
+    <span>Vault access expired</span>
+    <button id="reconnect-btn">Reconnect</button>
+  </div>
+  <div id="digest-status" class="status" style="display:none"></div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="feed">Feed</button>
+    <button class="tab" data-tab="ask">Ask</button>
+    <button class="tab" data-tab="discover">Discover</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- FEED -->
+  <div class="view active" id="view-feed">
+    <div class="feed-list" id="feed-list">
+      <div class="empty" id="empty-state">
+        <p>No bookmarks yet</p>
+        <p class="sub">Bookmark a tweet on X to get started</p>
+      </div>
+    </div>
+    <div id="sentinel"></div>
+  </div>
+
+  <!-- ASK -->
+  <div class="view" id="view-ask">
+    <div class="ask-container">
+      <div class="ask-history" id="ask-history">
+        <div class="ask-empty">
+          <p style="font:500 14px var(--font)">Ask your knowledge base</p>
+          <p style="font:400 12px var(--font);color:var(--t3)">Questions are answered using your bookmarks and wiki articles</p>
+        </div>
+      </div>
+      <div class="ask-input-row">
+        <input type="text" id="ask-input" placeholder="Ask a question..." class="ask-input">
+        <button id="ask-submit" class="ask-submit">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DISCOVER -->
+  <div class="view" id="view-discover">
+    <div class="section"><div class="stats-card" id="stats-card"></div></div>
+    <div class="section"><h2 class="section-title">Topics</h2><div class="cat-grid" id="cat-grid"></div></div>
+    <div class="section"><h2 class="section-title">Authors</h2><div class="author-list" id="author-list"></div></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="view" id="view-settings">
+    <div class="s-pad">
+
+      <div class="s-card">
+        <h3 class="s-title">Vault</h3>
+        <p class="s-desc">Obsidian folder for saved notes</p>
+        <div class="settings-folder-row">
+          <div class="settings-folder-box" id="settings-folder-display">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span id="settings-folder-path">Select folder...</span>
+          </div>
+          <button type="button" id="settings-browse-btn" class="settings-btn">Browse</button>
+        </div>
+      </div>
+
+      <div class="s-card">
+        <div class="row-between" style="align-items:center;margin-bottom:12px">
+          <h3 class="s-title" style="margin:0">AI</h3>
+          <label class="sw"><input type="checkbox" id="settings-enable-ai" checked><span class="sw-track"></span></label>
+        </div>
+        <div id="settings-ai-config">
+          <div class="settings-providers" id="settings-providers">
+            <button type="button" class="sp active" data-provider="claude">Claude</button>
+            <button type="button" class="sp" data-provider="openai">OpenAI</button>
+            <button type="button" class="sp" data-provider="openrouter">OpenRouter</button>
+            <button type="button" class="sp" data-provider="local">Local</button>
+          </div>
+          <div id="settings-key-section">
+            <label class="s-label">API Key</label>
+            <div style="position:relative">
+              <input type="password" id="settings-api-key" placeholder="sk-ant-..." class="settings-input">
+              <button type="button" id="settings-toggle-key" class="s-eye">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <p class="s-hint" id="settings-api-help"></p>
+          </div>
+          <div id="settings-url-section" style="display:none">
+            <label class="s-label">Server URL</label>
+            <input type="text" id="settings-server-url" placeholder="http://127.0.0.1:8080" class="settings-input">
+            <p class="s-hint">llama-server, Ollama, or any OpenAI-compatible local server</p>
+          </div>
+          <div class="s-row2">
+            <div><label class="s-label">Tagging</label><select id="settings-tag-model" class="settings-input"></select></div>
+            <div><label class="s-label">Digest</label><select id="settings-digest-model" class="settings-input"></select></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="s-card">
+        <h3 class="s-title">Usage</h3>
+        <div id="settings-usage"></div>
+        <div class="s-divider"></div>
+        <div class="row-between" style="align-items:center">
+          <span class="s-desc" style="margin:0">Monthly limit</span>
+          <div class="settings-limit"><span>$</span><input type="number" id="settings-limit" placeholder="1.00" step="0.1" min="0"></div>
+        </div>
+      </div>
+
+      <div class="s-card">
+        <div class="row-between" style="align-items:center;margin-bottom:8px">
+          <h3 class="s-title" style="margin:0">Health Check</h3>
+          <button id="lint-btn" class="settings-btn" style="padding:5px 12px;font-size:11px">Run</button>
+        </div>
+        <div id="lint-results"><span style="font-size:12px;color:var(--t3)">Check for gaps, stale articles, and missing connections</span></div>
+      </div>
+
+      <div class="s-card">
+        <h3 class="s-title">Export</h3>
+        <div class="btn-pair">
+          <button type="button" id="settings-export-json" class="settings-btn-flat">JSON</button>
+          <button type="button" id="settings-export-md" class="settings-btn-flat">Markdown</button>
+        </div>
+      </div>
+
+      <div class="s-card s-card-danger">
+        <h3 class="s-title" style="color:#dc2626">Danger Zone</h3>
+        <p class="s-desc">Permanently delete all data and settings.</p>
+        <button type="button" id="settings-reset" class="settings-btn-danger">Reset Everything</button>
+      </div>
+
+      <button type="button" id="settings-save" class="settings-btn-save">Save Settings</button>
+
+    </div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

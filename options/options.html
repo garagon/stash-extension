@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="options.css">
+  <title>Stash Settings</title>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <span>Settings</span>
+      </div>
+      <div class="header-btns">
+        <button type="button" id="save-btn">Save</button>
+        <button type="button" id="close-btn" class="btn-close" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <form id="settings-form">
+
+      <section class="card">
+        <h2>Vault</h2>
+        <p class="card-desc">Select the Obsidian vault folder where notes will be saved.</p>
+        <div class="folder-row">
+          <div class="folder-box" id="folder-display">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <span id="folder-path">Select folder...</span>
+          </div>
+          <button type="button" id="pick-folder-btn">Browse</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row-between">
+          <h2>AI</h2>
+          <label class="sw"><input type="checkbox" id="enable-ai" checked><span class="sw-track"></span></label>
+        </div>
+        <div id="ai-config">
+          <div class="tabs-mini" id="provider-cards">
+            <button type="button" class="tab-mini active" data-provider="claude">Claude</button>
+            <button type="button" class="tab-mini" data-provider="openai">OpenAI</button>
+            <button type="button" class="tab-mini" data-provider="openrouter">OpenRouter</button>
+          </div>
+          <label class="label">API Key</label>
+          <div class="key-input">
+            <input type="password" id="api-key" placeholder="sk-ant-...">
+            <button type="button" id="toggle-key"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+          <p class="hint" id="api-key-help"></p>
+          <div class="row-2">
+            <div><label class="label">Tagging</label><select id="tag-model"></select></div>
+            <div><label class="label">Digest</label><select id="digest-model"></select></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Usage</h2>
+        <div id="usage-display"></div>
+        <div class="divider"></div>
+        <div class="row-between" style="align-items:center">
+          <div>
+            <label class="label">Monthly limit</label>
+            <p class="hint" style="margin:0">AI pauses when reached</p>
+          </div>
+          <div class="limit-input">
+            <span>$</span>
+            <input type="number" id="spending-limit" placeholder="1.00" step="0.1" min="0">
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Export</h2>
+        <p class="card-desc"><span id="stats-bar">0</span> bookmarks saved</p>
+        <div class="btn-pair">
+          <button type="button" id="export-btn" class="btn-flat">JSON</button>
+          <button type="button" id="export-md-btn" class="btn-flat">Markdown</button>
+        </div>
+      </section>
+
+      <section class="card card-danger">
+        <h2>Danger Zone</h2>
+        <p class="card-desc">This will permanently delete all bookmarks, settings, and vault connection.</p>
+        <button type="button" id="clear-btn" class="btn-danger">Reset Everything</button>
+      </section>
+
+    </form>
+    <span id="save-status" class="toast"></span>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>

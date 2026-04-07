@@ -1,0 +1,291 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  max-height: 520px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #15202b;
+  color: #e7e9ea;
+  font-size: 14px;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Header */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #38444d;
+}
+
+header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #e7e9ea;
+}
+
+.header-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.digest-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  border: 1px solid #1d9bf0;
+  background: rgba(29, 155, 240, 0.1);
+  color: #1d9bf0;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.digest-btn:hover { background: rgba(29, 155, 240, 0.2); }
+.digest-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: #8899a6;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.icon-btn:hover {
+  color: #1d9bf0;
+  background: rgba(29, 155, 240, 0.1);
+}
+
+.digest-status {
+  padding: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid #38444d;
+}
+
+.digest-status.loading { color: #1d9bf0; }
+.digest-status.success { color: #00ba7c; }
+.digest-status.error { color: #f4212e; }
+
+/* Setup prompt */
+.setup-prompt {
+  padding: 12px 16px;
+  background: rgba(29, 155, 240, 0.1);
+  border-bottom: 1px solid #38444d;
+  text-align: center;
+}
+
+.setup-prompt p {
+  font-size: 13px;
+  color: #8899a6;
+  margin-bottom: 8px;
+}
+
+.btn-primary-small {
+  padding: 6px 16px;
+  border-radius: 16px;
+  border: none;
+  background: #1d9bf0;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-primary-small:hover {
+  background: #1a8cd8;
+}
+
+/* Search */
+.search-bar {
+  padding: 8px 16px;
+  border-bottom: 1px solid #38444d;
+}
+
+#search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 20px;
+  border: 1px solid #38444d;
+  background: #192734;
+  color: #e7e9ea;
+  font-size: 13px;
+  outline: none;
+}
+
+#search-input:focus {
+  border-color: #1d9bf0;
+}
+
+#search-input::placeholder {
+  color: #8899a6;
+}
+
+/* Stats */
+.stats {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #8899a6;
+  border-bottom: 1px solid #38444d;
+}
+
+/* Bookmark list */
+.bookmark-list {
+  overflow-y: auto;
+  max-height: 380px;
+  flex: 1;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px 16px;
+  color: #8899a6;
+}
+
+.empty-state p {
+  margin-bottom: 4px;
+}
+
+.empty-state .hint {
+  font-size: 12px;
+  color: #657786;
+}
+
+/* Bookmark card */
+.bookmark-card {
+  padding: 12px 16px;
+  border-bottom: 1px solid #38444d;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.bookmark-card:hover {
+  background: #192734;
+}
+
+.bookmark-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.bookmark-source {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.source-twitter {
+  background: #1d9bf0;
+  color: #fff;
+}
+
+.source-linkedin {
+  background: #0a66c2;
+  color: #fff;
+}
+
+.bookmark-author {
+  font-weight: 700;
+  font-size: 13px;
+  color: #e7e9ea;
+}
+
+.bookmark-handle {
+  color: #8899a6;
+  font-size: 13px;
+}
+
+.bookmark-date {
+  color: #8899a6;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.bookmark-text {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #d9d9d9;
+  margin-bottom: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.bookmark-summary {
+  font-size: 12px;
+  line-height: 1.3;
+  color: #1d9bf0;
+  margin-bottom: 4px;
+  font-style: italic;
+}
+
+.bookmark-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.category {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(0, 186, 124, 0.15);
+  color: #00ba7c;
+  font-weight: 600;
+}
+
+.tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(29, 155, 240, 0.12);
+  color: #1d9bf0;
+}
+
+.bookmark-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.bookmark-actions button {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #38444d;
+  background: transparent;
+  color: #8899a6;
+  cursor: pointer;
+}
+
+.bookmark-actions button:hover {
+  background: #192734;
+  color: #e7e9ea;
+}
+
+.bookmark-actions .delete-btn:hover {
+  color: #f4212e;
+  border-color: #f4212e;
+}
