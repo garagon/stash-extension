@@ -71,7 +71,17 @@
   <!-- DISCOVER -->
   <div class="view" id="view-discover">
     <div class="section"><div class="stats-card" id="stats-card"></div></div>
-    <div class="section"><h2 class="section-title">Topics</h2><div class="cat-grid" id="cat-grid"></div></div>
+    <div class="section"><h2 class="section-title">Categories</h2><div class="cat-grid" id="cat-grid"></div></div>
+    <div class="section">
+      <div class="row-between" style="align-items:center;margin-bottom:4px">
+        <h2 class="section-title" style="margin:0">Topics</h2>
+        <button type="button" id="topic-compile-bulk" class="settings-btn" style="display:none;padding:5px 12px;font-size:11px">Compile all</button>
+      </div>
+      <p class="section-sub" id="topic-summary" style="margin:0 0 4px 0"></p>
+      <p class="section-sub" style="margin-bottom:10px">Wiki articles compiled from related bookmarks. <strong style="color:#16a34a">ready</strong> = up to date · <strong style="color:var(--accent)">update</strong> = new bookmarks since last compile · <strong style="color:#92400E">queued</strong> = not yet compiled.</p>
+      <div id="topic-status-msg" class="s-test-result" style="display:none"></div>
+      <div class="topic-list" id="topic-list"></div>
+    </div>
     <div class="section"><h2 class="section-title">Authors</h2><div class="author-list" id="author-list"></div></div>
   </div>
 
@@ -115,8 +125,12 @@
           </div>
           <div id="settings-url-section" style="display:none">
             <label class="s-label">Server URL</label>
-            <input type="text" id="settings-server-url" placeholder="http://127.0.0.1:8080" class="settings-input">
+            <div class="settings-url-row">
+              <input type="text" id="settings-server-url" placeholder="http://127.0.0.1:8080" class="settings-input">
+              <button type="button" id="settings-test-local" class="settings-btn">Test</button>
+            </div>
             <p class="s-hint">llama-server, Ollama, or any OpenAI-compatible local server</p>
+            <div id="settings-test-result" class="s-test-result" style="display:none"></div>
           </div>
           <div class="s-row2">
             <div><label class="s-label">Tagging</label><select id="settings-tag-model" class="settings-input"></select></div>
@@ -133,6 +147,21 @@
           <span class="s-desc" style="margin:0">Monthly limit</span>
           <div class="settings-limit"><span>$</span><input type="number" id="settings-limit" placeholder="1.00" step="0.1" min="0"></div>
         </div>
+      </div>
+
+      <div class="s-card">
+        <div class="row-between" style="align-items:center;margin-bottom:8px">
+          <h3 class="s-title" style="margin:0">Pipeline</h3>
+          <button id="pipeline-refresh" class="settings-btn" style="padding:5px 12px;font-size:11px">Refresh</button>
+        </div>
+        <div id="pipeline-body">
+          <span style="font-size:12px;color:var(--t3)">Loading...</span>
+        </div>
+        <div id="pipeline-actions" class="btn-pair" style="margin-top:10px;display:none">
+          <button type="button" id="pipeline-retry" class="settings-btn-flat">Retry failed</button>
+          <button type="button" id="pipeline-force-compile" class="settings-btn-flat">Compile now</button>
+        </div>
+        <div id="pipeline-status" class="s-test-result" style="display:none"></div>
       </div>
 
       <div class="s-card">

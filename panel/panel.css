@@ -309,3 +309,47 @@ select.settings-input{cursor:pointer;appearance:none;background-image:url("data:
 .settings-btn-danger:hover{background:#fee2e2}
 .settings-btn-save{width:100%;padding:10px;border-radius:10px;border:none;background:#000;color:#fff;font:600 13px var(--font);cursor:pointer;margin-top:2px}
 .settings-btn-save:hover{opacity:.85}
+
+/* ── Pipeline health card ── */
+.settings-url-row{display:flex;gap:6px;align-items:center}
+.settings-url-row .settings-input{flex:1}
+.s-test-result{margin-top:8px;padding:6px 10px;border-radius:6px;font:500 11px var(--font)}
+.s-test-result.ok{background:rgba(22,163,74,.08);color:#16a34a}
+.s-test-result.err{background:rgba(220,38,38,.06);color:#dc2626}
+.s-test-result.info{background:var(--bg-el);color:var(--t2)}
+.pipeline-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
+.pipeline-cell{padding:8px;border-radius:8px;background:var(--bg-el);text-align:center}
+.pipeline-cell-num{font:700 18px var(--font);color:var(--t1);line-height:1.1}
+.pipeline-cell-num.warn{color:#d97706}
+.pipeline-cell-num.err{color:#dc2626}
+.pipeline-cell-num.ok{color:#16a34a}
+.pipeline-cell-label{font:500 10px var(--font);color:var(--t3);text-transform:uppercase;letter-spacing:.3px;margin-top:2px}
+.pipeline-provider{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;background:var(--bg-el);font:500 12px var(--font);margin-bottom:6px}
+.pipeline-dot{width:8px;height:8px;border-radius:50%;background:#999;flex-shrink:0}
+.pipeline-dot.ok{background:#16a34a}
+.pipeline-dot.err{background:#dc2626}
+.pipeline-error{padding:6px 10px;border-radius:8px;background:rgba(220,38,38,.06);color:#b91c1c;font:400 11px var(--font);margin-bottom:6px;word-break:break-word}
+
+/* ── Topics list (Discover) ── */
+.topic-list{display:flex;flex-direction:column;gap:4px}
+.topic-row{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;background:var(--bg-el);cursor:pointer}
+.topic-row:hover{background:var(--bg-hover)}
+.topic-name{font:600 13px var(--font);color:var(--t1);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topic-count{font:500 11px var(--font);color:var(--t3);background:var(--bg);padding:2px 8px;border-radius:6px;flex-shrink:0}
+.topic-status{font:500 10px var(--font);padding:2px 7px;border-radius:4px;flex-shrink:0;text-transform:uppercase;letter-spacing:.3px}
+.topic-status.ready{background:rgba(22,163,74,.08);color:#16a34a}
+.topic-status.queued{background:#FEF3C7;color:#92400E}
+.topic-status.update{background:var(--accent-soft);color:var(--accent)}
+.topic-empty{padding:16px;text-align:center;font:400 12px var(--font);color:var(--t3);background:var(--bg-el);border-radius:10px}
+.topic-compile-btn{background:#000;color:#fff;border:none;border-radius:6px;padding:4px 10px;font:600 10px var(--font);cursor:pointer;text-transform:uppercase;letter-spacing:.3px;flex-shrink:0}
+.topic-compile-btn:hover{opacity:.85}
+.topic-compile-btn:disabled{opacity:.4;cursor:not-allowed}
+.topic-row.busy{opacity:.6;pointer-events:none}
+
+/* While a bulk compile is running we lock the whole list so nobody can fire
+   another compile in parallel. Per-row buttons disappear and rows dim. */
+.topic-list.compiling .topic-row{opacity:.5;pointer-events:none}
+.topic-list.compiling .topic-compile-btn{display:none}
+.topic-compiling-banner{display:flex;align-items:center;gap:10px;padding:12px 14px;background:var(--accent-soft);border-radius:10px;margin-bottom:10px;color:var(--accent);font:600 13px var(--font)}
+.topic-compiling-banner .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}

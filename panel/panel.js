@@ -180,7 +180,7 @@ document.querySelector('.tabs').addEventListener('click', e => {
   tab.classList.add('active');
   $(`view-${tab.dataset.tab}`).classList.add('active');
   if (tab.dataset.tab === 'discover') renderDiscover();
-  if (tab.dataset.tab === 'settings') loadSettings();
+  if (tab.dataset.tab === 'settings') { loadSettings(); refreshPipelineHealth(); }
   if (tab.dataset.tab === 'ask') $('ask-input').focus();
 });
 
@@ -353,7 +353,7 @@ async function renderDiscover() {
   const weekAgo = new Date(now - 7 * 86400000);
   const thisWeek = allBookmarks.filter(b => new Date(b.savedAt) >= weekAgo);
 
-  // Stats
+  // Stats card: this-week headline + category breakdown (bars)
   const catCounts = {};
   thisWeek.forEach(b => { const c = b.category || 'Other'; catCounts[c] = (catCounts[c] || 0) + 1; });
   const maxCat = Math.max(...Object.values(catCounts), 1);
@@ -366,7 +366,7 @@ async function renderDiscover() {
       </div>
       <span style="font:500 12px var(--font);color:var(--t3)">${allBookmarks.length} total</span>
     </div>
-    ${Object.entries(catCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([cat, count]) => `
+    ${Object.entries(catCounts).sort((a, b) => b[1] - a[1]).map(([cat, count]) => `
       <div class="bar-row">
         <span class="bar-label">${esc(cat)}</span>
         <div class="bar-track"><div class="bar-fill" style="width:${(count / maxCat * 100)}%"></div></div>
@@ -375,7 +375,7 @@ async function renderDiscover() {
     `).join('')}
   `;
 
-  // Topics (from topic registry)
+  // Categories grid (all-time) — b.category is the coarse classification (AI, Tech, Business...)
   const cats = {};
   allBookmarks.forEach(b => { const c = b.category || 'Other'; cats[c] = (cats[c] || 0) + 1; });
   $('cat-grid').innerHTML = Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([cat, count]) =>
@@ -395,6 +395,11 @@ async function renderDiscover() {
     applyFilters();
   };
 
+  // Topics (from topicRegistry — the actual wiki slugs: ai-agents, prompt-engineering, etc.)
+  // Counts are recomputed from current bookmarks because registry.bookmarkCount only
+  // increments and can drift if bookmarks are deleted or retagged.
+  renderTopicList();
+
   // Authors
   const authors = {};
   allBookmarks.forEach(b => {
@@ -409,6 +414,212 @@ async function renderDiscover() {
     </div>
   `).join('');
 
+}
+
+// Module-level lock so the bulk button, per-row buttons, and the 2s auto-refresh
+// loop all coordinate on a single "compilation in flight" state. Without this,
+// a mid-compile refresh re-renders the list with stale counts AND shows fresh
+// per-row COMPILE buttons, which was confusing when you clicked bulk.
+let topicsCompileInflight = false;
+
+async function renderTopicList() {
+  // Never re-render while a compile is running — it would replace the busy
+  // rows with fresh ones and leak the compiling state.
+  if (topicsCompileInflight) return;
+  const list = $('topic-list');
+  const summary = $('topic-summary');
+  try {
+    // Recompute live counts from current bookmarks (registry can drift on delete/retag)
+    const topicCounts = {};
+    const topicLastSeen = {};
+    for (const b of allBookmarks) {
+      for (const t of (b.topics || [])) {
+        topicCounts[t] = (topicCounts[t] || 0) + 1;
+        if (!topicLastSeen[t] || b.savedAt > topicLastSeen[t]) topicLastSeen[t] = b.savedAt;
+      }
+    }
+
+    // Pull compile state from topicRegistry
+    const r = await chrome.runtime.sendMessage({ type: 'GET_TOPICS' });
+    const registry = r?.topics || {};
+
+    // Status semantics:
+    //   ready  — wiki article exists and is up to date with all current bookmarks
+    //   update — wiki article exists but there are newer bookmarks not yet merged in
+    //   queued — no wiki article yet (topic is waiting for its first compile)
+    const STATUS_LABELS = {
+      ready:  { label: 'ready',  tip: 'Wiki article is up to date' },
+      update: { label: 'update', tip: 'New bookmarks since last compile — needs refresh' },
+      queued: { label: 'queued', tip: 'Not yet compiled into a wiki article' },
+    };
+
+    const rows = Object.entries(topicCounts)
+      .map(([slug, count]) => {
+        const reg = registry[slug] || {};
+        const lastCompiled = reg.lastCompiled;
+        const lastSeen = topicLastSeen[slug];
+        let status;
+        if (!lastCompiled) status = 'queued';
+        else if (lastSeen && lastSeen > lastCompiled) status = 'update';
+        else status = 'ready';
+        const name = reg.name || slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        return { slug, name, count, status };
+      })
+      .sort((a, b) => {
+        // Sort by status priority (queued > update > ready), then by count
+        const order = { queued: 0, update: 1, ready: 2 };
+        if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+        return b.count - a.count;
+      });
+
+    if (rows.length === 0) {
+      list.innerHTML = `<div class="topic-empty">No topics yet — bookmark a few posts and the AI will create them.</div>`;
+      summary.textContent = '';
+      return;
+    }
+
+    const readyCount = rows.filter(r => r.status === 'ready').length;
+    const updateCount = rows.filter(r => r.status === 'update').length;
+    const queuedCount = rows.filter(r => r.status === 'queued').length;
+    const bits = [`${rows.length} topic${rows.length === 1 ? '' : 's'}`];
+    if (readyCount) bits.push(`${readyCount} ready`);
+    if (updateCount) bits.push(`${updateCount} to update`);
+    if (queuedCount) bits.push(`${queuedCount} queued`);
+    summary.textContent = bits.join(' · ');
+
+    list.innerHTML = rows.map(r => {
+      const s = STATUS_LABELS[r.status];
+      // Actionable topics (queued or needs update) get a per-row Compile button.
+      const action = r.status !== 'ready'
+        ? `<button class="topic-compile-btn" data-action="compile" data-slug="${esc(r.slug)}">Compile</button>`
+        : '';
+      return `
+        <div class="topic-row" data-slug="${esc(r.slug)}" title="${esc(s.tip)}">
+          <span class="topic-name">${esc(r.name)}</span>
+          <span class="topic-status ${r.status}">${s.label}</span>
+          ${action}
+          <span class="topic-count">${r.count}</span>
+        </div>
+      `;
+    }).join('');
+
+    // Bulk compile button: visible when there are queued or update topics
+    const bulkBtn = $('topic-compile-bulk');
+    const actionable = rows.filter(r => r.status !== 'ready');
+    if (actionable.length > 0) {
+      bulkBtn.style.display = '';
+      bulkBtn.textContent = `Compile ${actionable.length}`;
+      bulkBtn.disabled = false;
+    } else {
+      bulkBtn.style.display = 'none';
+    }
+
+    list.onclick = async (e) => {
+      // Per-row compile button: compile just this topic
+      const compileBtn = e.target.closest('[data-action="compile"]');
+      if (compileBtn) {
+        e.stopPropagation();
+        if (topicsCompileInflight) return; // bulk already running — ignore
+        const slug = compileBtn.dataset.slug;
+        const name = compileBtn.closest('.topic-row')?.querySelector('.topic-name')?.textContent || slug;
+        await runCompile([slug], `Compiling "${name}"...`);
+        return;
+      }
+      // Row click (not on button): filter Feed by the topic slug
+      const row = e.target.closest('.topic-row');
+      if (!row) return;
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelector('.tab[data-tab="feed"]').classList.add('active');
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      $('view-feed').classList.add('active');
+      $('search-input').value = row.dataset.slug;
+      applyFilters();
+    };
+  } catch (e) {
+    list.innerHTML = `<div class="topic-empty">Failed to load topics: ${esc(e.message)}</div>`;
+  }
+}
+
+// Single entry point for both per-row and bulk compiles. Locks the list, shows
+// a banner, calls the background, then releases the lock and refreshes.
+async function runCompile(slugs, bannerText) {
+  if (topicsCompileInflight || !slugs || slugs.length === 0) return;
+  topicsCompileInflight = true;
+
+  const list = $('topic-list');
+  const bulkBtn = $('topic-compile-bulk');
+  const statusMsg = $('topic-status-msg');
+  list.classList.add('compiling');
+
+  // Insert a prominent banner above the list so the user sees progress clearly.
+  let banner = document.getElementById('topic-compiling-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'topic-compiling-banner';
+    banner.className = 'topic-compiling-banner';
+    list.parentNode.insertBefore(banner, list);
+  }
+  banner.innerHTML = `<span class="dot"></span><span>${esc(bannerText)}</span>`;
+  banner.style.display = 'flex';
+
+  if (bulkBtn) {
+    bulkBtn.disabled = true;
+    bulkBtn.textContent = slugs.length > 1 ? `Compiling ${slugs.length}...` : 'Compiling...';
+  }
+  if (statusMsg) statusMsg.style.display = 'none';
+
+  let result = null;
+  let error = null;
+  try {
+    if (slugs.length === 1) {
+      result = await chrome.runtime.sendMessage({ type: 'COMPILE_TOPIC', topic: slugs[0] });
+    } else {
+      result = await chrome.runtime.sendMessage({ type: 'COMPILE_TOPIC_LIST', topics: slugs });
+    }
+    if (result?.success === false) throw new Error(result.error || 'Compile failed');
+  } catch (e) {
+    error = e;
+  } finally {
+    topicsCompileInflight = false;
+    list.classList.remove('compiling');
+    banner.style.display = 'none';
+  }
+
+  if (error) {
+    showTopicStatus(`✗ ${error.message}`, 'err');
+  } else {
+    const n = result?.count || slugs.length;
+    showTopicStatus(`✓ Compiled ${n} topic${n === 1 ? '' : 's'}`, 'ok');
+  }
+  await renderTopicList();
+}
+
+function showTopicStatus(text, kind) {
+  const el = $('topic-status-msg');
+  if (!el) return;
+  el.style.display = 'block';
+  el.className = `s-test-result ${kind || 'info'}`;
+  el.textContent = text;
+  if (kind === 'ok' || kind === 'err') {
+    setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+}
+
+// Bulk compile button in Topics header — compiles every queued + update topic at once.
+{
+  const el = document.getElementById('topic-compile-bulk');
+  if (el) el.addEventListener('click', async () => {
+    if (topicsCompileInflight) return;
+    const rows = [...document.querySelectorAll('.topic-row')];
+    const actionable = rows
+      .filter(r => {
+        const st = r.querySelector('.topic-status');
+        return st && !st.classList.contains('ready');
+      })
+      .map(r => r.dataset.slug);
+    if (actionable.length === 0) return;
+    await runCompile(actionable, `Compiling ${actionable.length} topics — this may take a minute`);
+  });
 }
 
 function gemCard(b) {
@@ -586,10 +797,161 @@ $('settings-save').addEventListener('click', async () => {
     configured: true,
   };
   await chrome.storage.local.set({ settings });
+  // Tell background to drain any bookmarks that were skipped for spending limit.
+  chrome.runtime.sendMessage({ type: 'SETTINGS_CHANGED' }).catch(() => {});
   // Go back to feed
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $('view-feed').classList.add('active');
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'feed'));
+});
+
+// ===== TEST LOCAL CONNECTION =====
+$('settings-test-local').addEventListener('click', async () => {
+  const btn = $('settings-test-local');
+  const result = $('settings-test-result');
+  const url = $('settings-server-url').value.trim() || 'http://127.0.0.1:8080';
+  btn.disabled = true;
+  result.style.display = 'block';
+  result.className = 's-test-result info';
+  result.textContent = `Pinging ${url}...`;
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'PING_LOCAL', url });
+    if (r?.ok) {
+      result.className = 's-test-result ok';
+      result.textContent = `✓ Reachable (${r.url})`;
+    } else {
+      result.className = 's-test-result err';
+      result.textContent = `✗ ${r?.error || 'Unreachable'}`;
+    }
+  } catch (e) {
+    result.className = 's-test-result err';
+    result.textContent = `✗ ${e.message}`;
+  }
+  btn.disabled = false;
+});
+
+// ===== PIPELINE HEALTH =====
+async function refreshPipelineHealth() {
+  const body = $('pipeline-body');
+  const actions = $('pipeline-actions');
+  body.innerHTML = '<span style="font-size:12px;color:var(--t3)">Checking...</span>';
+  actions.style.display = 'none';
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'GET_PIPELINE_HEALTH' });
+    if (!r) throw new Error('No response');
+
+    const c = r.bookmarks || {};
+    const pending = (c.pending || 0) + (c.legacy || 0);
+    const failed = c.failed || 0;
+    const skipped = c.skipped_limit || 0;
+    const ok = c.ok || 0;
+
+    let html = '';
+    // Provider row
+    const prov = r.provider || {};
+    const dotClass = prov.reachable === true ? 'ok' : prov.reachable === false ? 'err' : '';
+    const provLabel = prov.name || 'none';
+    const provDetail = prov.name === 'local'
+      ? (prov.reachable ? `Local · ${esc(prov.url || '')}` : `Local · ${esc(prov.error || 'offline')}`)
+      : (prov.configured ? `${esc(provLabel)} · configured` : `${esc(provLabel)} · no API key`);
+    html += `<div class="pipeline-provider"><span class="pipeline-dot ${dotClass}"></span><span>${provDetail}</span></div>`;
+
+    // Counts grid
+    html += `<div class="pipeline-grid">
+      <div class="pipeline-cell"><div class="pipeline-cell-num ok">${ok}</div><div class="pipeline-cell-label">Tagged</div></div>
+      <div class="pipeline-cell"><div class="pipeline-cell-num ${pending ? 'warn' : ''}">${pending}</div><div class="pipeline-cell-label">Pending</div></div>
+      <div class="pipeline-cell"><div class="pipeline-cell-num ${failed ? 'err' : ''}">${failed}</div><div class="pipeline-cell-label">Failed</div></div>
+    </div>`;
+
+    if (skipped > 0) {
+      html += `<div class="pipeline-provider"><span>Skipped (limit): <strong>${skipped}</strong></span></div>`;
+    }
+
+    // Pending compilations + compile failures
+    const pCompiles = (r.pendingCompilations || []).length;
+    const compFails = (r.compileFailures || []).length;
+    if (pCompiles > 0 || compFails > 0 || (r.pendingWrites || 0) > 0) {
+      html += `<div style="font:400 11px var(--font);color:var(--t3);margin-bottom:6px">`;
+      const bits = [];
+      if (pCompiles > 0) bits.push(`${pCompiles} pending compile${pCompiles > 1 ? 's' : ''}`);
+      if (compFails > 0) bits.push(`${compFails} compile failure${compFails > 1 ? 's' : ''}`);
+      if (r.pendingWrites > 0) bits.push(`${r.pendingWrites} queued write${r.pendingWrites > 1 ? 's' : ''}`);
+      html += bits.join(' · ');
+      html += `</div>`;
+    }
+
+    // Last error
+    const lastErr = r.lastFailure?.error || r.lastAiError?.message;
+    if (lastErr && (pending > 0 || failed > 0 || compFails > 0)) {
+      html += `<div class="pipeline-error">Last error: ${esc(lastErr).slice(0, 160)}</div>`;
+    }
+
+    body.innerHTML = html;
+
+    // Show actions if there's anything to retry
+    const retryable = r.retryable || 0;
+    if (retryable > 0 || compFails > 0 || pCompiles > 0) {
+      actions.style.display = 'flex';
+      $('pipeline-retry').disabled = retryable === 0 && compFails === 0;
+      $('pipeline-retry').textContent = retryable > 0 ? `Retry ${retryable} bookmark${retryable > 1 ? 's' : ''}` : 'Retry compiles';
+      $('pipeline-force-compile').disabled = pCompiles === 0;
+      $('pipeline-force-compile').textContent = pCompiles > 0 ? `Compile ${pCompiles} now` : 'Compile now';
+    }
+  } catch (e) {
+    body.innerHTML = `<span style="font-size:12px;color:#dc2626">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+$('pipeline-refresh').addEventListener('click', refreshPipelineHealth);
+
+$('pipeline-retry').addEventListener('click', async () => {
+  const btn = $('pipeline-retry');
+  const status = $('pipeline-status');
+  btn.disabled = true;
+  status.style.display = 'block';
+  status.className = 's-test-result info';
+  status.textContent = 'Retrying...';
+  try {
+    // Reprocess bookmarks first
+    const r = await chrome.runtime.sendMessage({ type: 'REPROCESS_BOOKMARKS' });
+    if (!r?.success) {
+      status.className = 's-test-result err';
+      status.textContent = `✗ ${r?.error || 'Retry failed'}`;
+    } else {
+      const parts = [];
+      if (r.ok) parts.push(`${r.ok} ok`);
+      if (r.failed) parts.push(`${r.failed} failed`);
+      if (r.skipped) parts.push(`${r.skipped} skipped`);
+      status.className = r.failed ? 's-test-result err' : 's-test-result ok';
+      status.textContent = `✓ ${parts.join(' · ') || 'nothing to retry'}`;
+    }
+    // Also retry any failed wiki compilations
+    await chrome.runtime.sendMessage({ type: 'RETRY_COMPILATIONS' }).catch(() => {});
+  } catch (e) {
+    status.className = 's-test-result err';
+    status.textContent = `✗ ${e.message}`;
+  }
+  btn.disabled = false;
+  setTimeout(() => refreshPipelineHealth(), 500);
+});
+
+$('pipeline-force-compile').addEventListener('click', async () => {
+  const btn = $('pipeline-force-compile');
+  const status = $('pipeline-status');
+  btn.disabled = true;
+  status.style.display = 'block';
+  status.className = 's-test-result info';
+  status.textContent = 'Compiling...';
+  try {
+    const r = await chrome.runtime.sendMessage({ type: 'FORCE_COMPILE_PENDING' });
+    status.className = 's-test-result ok';
+    status.textContent = `✓ Compiled ${r?.count || 0} topic${r?.count === 1 ? '' : 's'}`;
+  } catch (e) {
+    status.className = 's-test-result err';
+    status.textContent = `✗ ${e.message}`;
+  }
+  btn.disabled = false;
+  setTimeout(() => refreshPipelineHealth(), 500);
 });
 
 $('settings-export-json').addEventListener('click', async () => {
