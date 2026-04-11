@@ -24,10 +24,28 @@ async function saveBookmark(tweet) {
   await chrome.storage.local.set({ bookmarks });
 }
 
+async function patchBookmark(id, patch) {
+  const result = await chrome.storage.local.get('bookmarks');
+  const bookmarks = result.bookmarks || {};
+  if (!bookmarks[id]) return false;
+  bookmarks[id] = { ...bookmarks[id], ...patch };
+  await chrome.storage.local.set({ bookmarks });
+  return true;
+}
+
 async function getBookmarks() {
   const result = await chrome.storage.local.get('bookmarks');
   return result.bookmarks || {};
 }
+
+// Tagging status values: 'pending' | 'ok' | 'failed' | 'skipped_limit' | 'skipped_disabled'
+const TAG_STATUS = {
+  PENDING: 'pending',
+  OK: 'ok',
+  FAILED: 'failed',
+  SKIPPED_LIMIT: 'skipped_limit',
+  SKIPPED_DISABLED: 'skipped_disabled',
+};
 
 // ---- Tweet normalization ----
 
@@ -53,6 +71,10 @@ function normalizeTweet(raw) {
     compiledAt: raw.compiledAt || null,
     compiledInto: raw.compiledInto || [],
     userNote: raw.userNote || '',
+    taggingStatus: raw.taggingStatus || TAG_STATUS.PENDING,
+    taggingError: raw.taggingError || null,
+    taggingAttempts: raw.taggingAttempts || 0,
+    lastTaggingAt: raw.lastTaggingAt || null,
   };
 }
 
@@ -181,41 +203,51 @@ const AI_PROMPT = `Analyze this social media post and return a JSON object with:
 Return ONLY valid JSON, nothing else. Example:
 {"category":"AI","tags":["agents","open-source","benchmarks"],"topics":["ai-agents","open-source-ai"],"summary":"New open-source agent optimization library"}`;
 
+// AiError carries a machine-readable code so callers (and UI) can distinguish
+// recoverable situations (local offline, rate limit) from permanent ones (bad key).
+class AiError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.code = code;
+  }
+}
+
 async function analyzePost(text, settings) {
   const { aiProvider, apiKey } = settings;
-  if (!apiKey || !text) return null;
+  if (!text) throw new AiError('empty_text', 'No text to analyze');
+  if (aiProvider !== 'local' && !apiKey) throw new AiError('no_api_key', 'No API key configured');
+
+  const prompt = `${AI_PROMPT}\n\nPost: "${text.substring(0, 500)}"`;
+  let responseText = '';
+
+  const model = settings.tagModel; // fast model for tagging
+  if (aiProvider === 'claude') {
+    responseText = await callClaude(prompt, apiKey, model);
+  } else if (aiProvider === 'openai') {
+    responseText = await callOpenAI(prompt, apiKey, model);
+  } else if (aiProvider === 'openrouter') {
+    responseText = await callOpenRouter(prompt, apiKey, model);
+  } else if (aiProvider === 'local') {
+    responseText = await callLocal(prompt, settings.localServerUrl, model);
+  } else {
+    throw new AiError('unknown_provider', `Unknown provider: ${aiProvider}`);
+  }
+
+  console.log('[Stash] AI response:', responseText);
+
+  const match = responseText.match(/\{[\s\S]*\}/);
+  if (!match) throw new AiError('no_json', 'AI response did not contain JSON');
 
   try {
-    const prompt = `${AI_PROMPT}\n\nPost: "${text.substring(0, 500)}"`;
-    let responseText = '';
-
-    const model = settings.tagModel; // fast model for tagging
-    if (aiProvider === 'claude') {
-      responseText = await callClaude(prompt, apiKey, model);
-    } else if (aiProvider === 'openai') {
-      responseText = await callOpenAI(prompt, apiKey, model);
-    } else if (aiProvider === 'openrouter') {
-      responseText = await callOpenRouter(prompt, apiKey, model);
-    } else if (aiProvider === 'local') {
-      responseText = await callLocal(prompt, settings.localServerUrl, model);
-    }
-
-    console.log('[Stash] AI response:', responseText);
-
-    const match = responseText.match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      return {
-        category: parsed.category || 'Other',
-        tags: (parsed.tags || []).filter(t => typeof t === 'string').map(t => t.toLowerCase().replace(/\s+/g, '-')).slice(0, 5),
-        topics: (parsed.topics || []).filter(t => typeof t === 'string').map(t => t.toLowerCase().replace(/\s+/g, '-')).slice(0, 2),
-        summary: parsed.summary || '',
-      };
-    }
-    return null;
+    const parsed = JSON.parse(match[0]);
+    return {
+      category: parsed.category || 'Other',
+      tags: (parsed.tags || []).filter(t => typeof t === 'string').map(t => t.toLowerCase().replace(/\s+/g, '-')).slice(0, 5),
+      topics: (parsed.topics || []).filter(t => typeof t === 'string').map(t => t.toLowerCase().replace(/\s+/g, '-')).slice(0, 2),
+      summary: parsed.summary || '',
+    };
   } catch (e) {
-    console.warn('[Stash] AI analysis failed:', e);
-    return null;
+    throw new AiError('invalid_json', `Failed to parse AI JSON: ${e.message}`);
   }
 }
 
@@ -271,23 +303,29 @@ async function checkSpendingLimit() {
 }
 
 async function callClaude(prompt, apiKey, model) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: model || 'claude-haiku-4-5-20251001',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  let response;
+  try {
+    response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: model || 'claude-haiku-4-5-20251001',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+  } catch (e) {
+    throw new AiError('network', `Claude network error: ${e.message}`);
+  }
   if (!response.ok) {
-    console.warn('[Stash] Claude API error:', response.status, await response.text().catch(() => ''));
-    return '';
+    const body = await response.text().catch(() => '');
+    const code = response.status === 401 ? 'auth' : response.status === 429 ? 'rate_limit' : response.status >= 500 ? 'upstream' : 'http_error';
+    throw new AiError(code, `Claude API ${response.status}: ${body.slice(0, 200)}`);
   }
   const data = await response.json();
   const output = data.content?.[0]?.text || '';
@@ -296,21 +334,27 @@ async function callClaude(prompt, apiKey, model) {
 }
 
 async function callOpenAI(prompt, apiKey, model) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model || 'gpt-4o-mini',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  let response;
+  try {
+    response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model || 'gpt-4o-mini',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+  } catch (e) {
+    throw new AiError('network', `OpenAI network error: ${e.message}`);
+  }
   if (!response.ok) {
-    console.warn('[Stash] OpenAI API error:', response.status);
-    return '';
+    const body = await response.text().catch(() => '');
+    const code = response.status === 401 ? 'auth' : response.status === 429 ? 'rate_limit' : response.status >= 500 ? 'upstream' : 'http_error';
+    throw new AiError(code, `OpenAI API ${response.status}: ${body.slice(0, 200)}`);
   }
   const data = await response.json();
   const output = data.choices?.[0]?.message?.content || '';
@@ -319,21 +363,27 @@ async function callOpenAI(prompt, apiKey, model) {
 }
 
 async function callOpenRouter(prompt, apiKey, model) {
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model || 'anthropic/claude-haiku',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  let response;
+  try {
+    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: model || 'anthropic/claude-haiku',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+  } catch (e) {
+    throw new AiError('network', `OpenRouter network error: ${e.message}`);
+  }
   if (!response.ok) {
-    console.warn('[Stash] OpenRouter API error:', response.status);
-    return '';
+    const body = await response.text().catch(() => '');
+    const code = response.status === 401 ? 'auth' : response.status === 429 ? 'rate_limit' : response.status >= 500 ? 'upstream' : 'http_error';
+    throw new AiError(code, `OpenRouter API ${response.status}: ${body.slice(0, 200)}`);
   }
   const data = await response.json();
   const output = data.choices?.[0]?.message?.content || '';
@@ -345,28 +395,57 @@ async function callLocal(prompt, endpoint, model) {
   const baseUrl = (endpoint || 'http://127.0.0.1:8080').replace(/\/+$/, '');
   const url = baseUrl + '/v1/chat/completions';
   console.log('[Stash] Local AI call to:', url);
+  let response;
   try {
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: [{ role: 'user', content: prompt }],
       }),
     });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      console.warn('[Stash] Local server error:', response.status, errText);
-      return '';
-    }
-    const data = await response.json();
-    const output = data.choices?.[0]?.message?.content || '';
-    console.log('[Stash] Local AI response:', output.substring(0, 100));
-    trackUsage(prompt.length, output.length, 'local');
-    return output;
   } catch (e) {
-    console.error('[Stash] Local AI failed:', e.message);
-    return '';
+    // Fetch rejected = network unreachable (server offline, wrong port, etc.)
+    throw new AiError('local_offline', `Local server unreachable at ${baseUrl}: ${e.message}`);
   }
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    throw new AiError('local_error', `Local server ${response.status}: ${errText.slice(0, 200)}`);
+  }
+  const data = await response.json();
+  const output = data.choices?.[0]?.message?.content || '';
+  console.log('[Stash] Local AI response:', output.substring(0, 100));
+  trackUsage(prompt.length, output.length, 'local');
+  return output;
+}
+
+// ---- Local server health check ----
+async function pingLocalServer(endpoint) {
+  const baseUrl = (endpoint || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+  const tryPath = async (path) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3000);
+    try {
+      const res = await fetch(baseUrl + path, { signal: ctrl.signal });
+      clearTimeout(timer);
+      return res;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // Try OpenAI-compatible /v1/models first (llama-server, Ollama, LM Studio all support it)
+  try {
+    const res = await tryPath('/v1/models');
+    if (res.ok) return { ok: true, url: baseUrl, status: res.status };
+  } catch {}
+  // Fallback: /health (some servers expose it)
+  try {
+    const res = await tryPath('/health');
+    if (res.ok) return { ok: true, url: baseUrl, status: res.status };
+  } catch (e) {
+    return { ok: false, url: baseUrl, error: e.message || 'unreachable' };
+  }
+  return { ok: false, url: baseUrl, error: 'unreachable' };
 }
 
 // ---- File saving via offscreen document ----
@@ -442,18 +521,31 @@ async function updateTopicRegistry(tweet) {
 }
 
 let compilationTimer = null;
-const pendingTopics = new Set();
+let pendingTopics = new Set();
 
-function queueCompilation(topics) {
+// Persist the compilation queue so a service-worker restart doesn't lose it.
+async function persistPendingTopics() {
+  await chrome.storage.local.set({ pendingCompilationQueue: [...pendingTopics] });
+}
+
+async function queueCompilation(topics) {
   topics.forEach(t => pendingTopics.add(t));
+  await persistPendingTopics();
+  scheduleCompilationDrain(30000);
+}
+
+function scheduleCompilationDrain(delayMs) {
   if (compilationTimer) clearTimeout(compilationTimer);
-  compilationTimer = setTimeout(() => {
+  compilationTimer = setTimeout(async () => {
     const topicsToCompile = [...pendingTopics];
     pendingTopics.clear();
     compilationTimer = null;
-    console.log('[Stash] Compilation triggered for:', topicsToCompile);
-    compileTopics(topicsToCompile);
-  }, 30000); // 30s debounce
+    await persistPendingTopics();
+    if (topicsToCompile.length > 0) {
+      console.log('[Stash] Compilation triggered for:', topicsToCompile);
+      compileTopics(topicsToCompile);
+    }
+  }, delayMs);
 }
 
 // ---- Compilation engine (Phase 3) ----
@@ -471,8 +563,10 @@ async function compileTopics(topicSlugs) {
   for (const topic of topicSlugs) {
     try {
       await compileTopic(topic, allBookmarks, compilationLog, settings);
+      await recordCompileSuccess(topic);
     } catch (e) {
       console.error(`[Stash] Compilation failed for ${topic}:`, e);
+      await recordCompileFailure(topic, e.message || String(e));
     }
   }
 
@@ -564,7 +658,9 @@ INSTRUCTIONS:
 
   if (!articleContent || articleContent.length < 50) {
     console.warn(`[Stash] Compilation returned empty for ${topicSlug}`);
-    return;
+    // Throw so compileTopics records the failure and the topic stays on the
+    // retry list instead of being silently abandoned.
+    throw new Error('empty_compilation_output');
   }
 
   // Save wiki article
@@ -600,6 +696,38 @@ INSTRUCTIONS:
   await chrome.storage.local.set({ bookmarks: bks });
 
   console.log(`[Stash] Compiled wiki/${topicSlug}.md (${topicBookmarks.length} sources)`);
+}
+
+// ---- Compile failure tracking ----
+async function recordCompileFailure(slug, errorMsg) {
+  const r = await chrome.storage.local.get('compileFailures');
+  const failures = r.compileFailures || {};
+  failures[slug] = {
+    error: errorMsg || 'unknown',
+    attempts: (failures[slug]?.attempts || 0) + 1,
+    lastAttempt: new Date().toISOString(),
+  };
+  await chrome.storage.local.set({ compileFailures: failures });
+}
+
+async function recordCompileSuccess(slug) {
+  const r = await chrome.storage.local.get('compileFailures');
+  const failures = r.compileFailures || {};
+  if (failures[slug]) {
+    delete failures[slug];
+    await chrome.storage.local.set({ compileFailures: failures });
+  }
+}
+
+async function retryFailedCompilations() {
+  const r = await chrome.storage.local.get('compileFailures');
+  const failures = r.compileFailures || {};
+  const slugs = Object.keys(failures);
+  if (slugs.length === 0) return { success: true, total: 0 };
+  await compileTopics(slugs);
+  const r2 = await chrome.storage.local.get('compileFailures');
+  const remaining = Object.keys(r2.compileFailures || {}).length;
+  return { success: true, total: slugs.length, remaining, ok: slugs.length - remaining };
 }
 
 async function generateIndex(allBookmarks, topicGraph) {
@@ -794,26 +922,46 @@ async function ensureOffscreen() {
   }
 }
 
-// File write queue — panel drains this when it's open
-const writeQueue = [];
+// File write queue — persisted in chrome.storage.local so a service-worker
+// restart doesn't lose queued files. Panel drains this when it's open.
+async function loadWriteQueue() {
+  const r = await chrome.storage.local.get('pendingWriteQueue');
+  return r.pendingWriteQueue || [];
+}
+
+async function saveWriteQueue(queue) {
+  await chrome.storage.local.set({ pendingWriteQueue: queue });
+}
 
 async function saveMarkdownFile(folder, filename, content) {
-  // Queue the write — panel will process it
-  writeQueue.push({ folder, filename, content });
-  // Try to send to panel immediately
+  const queue = await loadWriteQueue();
+  queue.push({ folder, filename, content });
+  await saveWriteQueue(queue);
+
+  // Try to send to panel immediately. Panel's writeFiles() returns a truthy/falsy
+  // result (true on success, false on permission failure). If the panel isn't
+  // open, sendMessage rejects — we leave the queue as-is for next time.
   try {
-    await chrome.runtime.sendMessage({ type: 'WRITE_FILES', files: writeQueue.splice(0) });
+    const ok = await chrome.runtime.sendMessage({ type: 'WRITE_FILES', files: queue });
+    if (ok) {
+      await saveWriteQueue([]);
+      return true;
+    }
+    console.log('[Stash] Write queued (panel failed):', folder ? `${folder}/${filename}.md` : `${filename}.md`);
     return true;
   } catch {
-    // Panel not open — files stay in queue, will be drained when panel opens
+    // Panel not open — files stay in queue, will be drained when panel opens.
     console.log('[Stash] Write queued (panel not open):', folder ? `${folder}/${filename}.md` : `${filename}.md`);
-    return true; // Don't report failure — it's queued
+    return true;
   }
 }
 
-// Panel requests pending writes on load
-function getPendingWrites() {
-  return writeQueue.splice(0);
+// Panel requests pending writes on load. Clears the queue atomically after the
+// panel confirms the writes landed.
+async function getPendingWrites() {
+  const queue = await loadWriteQueue();
+  if (queue.length > 0) await saveWriteQueue([]);
+  return queue;
 }
 
 // ---- Obsidian URI (manual only, from popup) ----
@@ -895,6 +1043,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'COMPILE_TOPIC_LIST') {
+    // Bulk compile a caller-supplied list (used by Discover's "Compile queued" button).
+    (async () => {
+      const topics = message.topics || [];
+      if (topics.length === 0) { sendResponse({ success: true, count: 0 }); return; }
+      try {
+        await compileTopics(topics);
+        sendResponse({ success: true, count: topics.length });
+      } catch (e) {
+        sendResponse({ success: false, error: e.message });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === 'COMPILE_ALL') {
     (async () => {
       const reg = await chrome.storage.local.get('topicRegistry');
@@ -929,7 +1092,53 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'GET_PENDING_WRITES') {
-    sendResponse({ files: getPendingWrites() });
+    getPendingWrites().then(files => sendResponse({ files }));
+    return true;
+  }
+
+  if (message.type === 'PING_LOCAL') {
+    pingLocalServer(message.url).then(r => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === 'GET_PIPELINE_HEALTH') {
+    getPipelineHealth().then(r => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === 'REPROCESS_BOOKMARKS') {
+    reprocessFailedBookmarks(message.opts || {}).then(r => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === 'RETRY_COMPILATIONS') {
+    retryFailedCompilations().then(r => sendResponse(r));
+    return true;
+  }
+
+  if (message.type === 'FORCE_COMPILE_PENDING') {
+    // Drain the debounced compilation queue immediately instead of waiting 30s.
+    if (compilationTimer) { clearTimeout(compilationTimer); compilationTimer = null; }
+    const topicsToCompile = [...pendingTopics];
+    pendingTopics.clear();
+    persistPendingTopics().then(() => {
+      if (topicsToCompile.length === 0) { sendResponse({ success: true, count: 0 }); return; }
+      compileTopics(topicsToCompile).then(() => sendResponse({ success: true, count: topicsToCompile.length }));
+    });
+    return true;
+  }
+
+  if (message.type === 'SETTINGS_CHANGED') {
+    // After a settings save, opportunistically drain any bookmarks that were
+    // skipped due to the spending limit (user may have raised the limit or
+    // switched providers). Runs in the background; doesn't block the response.
+    (async () => {
+      try {
+        const r = await reprocessFailedBookmarks({ onlyStatus: TAG_STATUS.SKIPPED_LIMIT });
+        if (r?.ok) console.log('[Stash] Drained', r.ok, 'bookmarks skipped for limit after settings change');
+      } catch (e) { console.warn('[Stash] Drain after settings change failed:', e.message); }
+    })();
+    sendResponse({ success: true });
     return true;
   }
 
@@ -958,32 +1167,71 @@ async function handleBookmark(rawTweet) {
     tweet.source = rawTweet.source || 'twitter';
     tweet.category = 'Uncategorized';
     tweet.summary = '';
+    tweet.taggingStatus = TAG_STATUS.PENDING;
 
     // Save immediately so it appears in the panel right away
     await saveBookmark(tweet);
     console.log('[Stash] Bookmark saved:', tweet.id);
 
-    // AI analysis (async — updates the bookmark after)
-    const withinBudget = await checkSpendingLimit();
+    // Decide whether to attempt AI analysis
     const isLocal = settings.aiProvider === 'local';
-    const hasKey = isLocal || settings.apiKey;
-    if (settings.enableAiTagging && hasKey && tweet.text && (isLocal || withinBudget)) {
-      console.log('[Stash] Calling AI...');
-      try {
-        const analysis = await analyzePost(tweet.text, settings);
-        if (analysis) {
-          tweet.tags = analysis.tags;
-          tweet.topics = analysis.topics || [];
-          tweet.category = analysis.category;
-          tweet.summary = analysis.summary;
-          // Re-save with AI data
-          await saveBookmark(tweet);
-          console.log('[Stash] AI updated:', analysis.category, analysis.topics);
+    const hasKey = isLocal || !!settings.apiKey;
+    const withinBudget = isLocal ? true : await checkSpendingLimit();
+
+    if (!settings.enableAiTagging) {
+      tweet.taggingStatus = TAG_STATUS.SKIPPED_DISABLED;
+    } else if (!hasKey) {
+      tweet.taggingStatus = TAG_STATUS.FAILED;
+      tweet.taggingError = 'no_api_key';
+    } else if (!tweet.text) {
+      tweet.taggingStatus = TAG_STATUS.SKIPPED_DISABLED;
+    } else if (!withinBudget) {
+      tweet.taggingStatus = TAG_STATUS.SKIPPED_LIMIT;
+      tweet.taggingError = 'spending_limit_reached';
+    } else {
+      // Pre-flight ping for local provider: fail fast instead of timing out on every call.
+      if (isLocal) {
+        const ping = await pingLocalServer(settings.localServerUrl);
+        if (!ping.ok) {
+          tweet.taggingStatus = TAG_STATUS.PENDING;
+          tweet.taggingError = `local_offline: ${ping.error || 'unreachable'}`;
+          tweet.taggingAttempts = (tweet.taggingAttempts || 0) + 1;
+          tweet.lastTaggingAt = new Date().toISOString();
+          console.warn('[Stash] Local server offline — bookmark queued for retry');
+          await recordTaggingFailure(tweet.taggingError);
         }
-      } catch (e) {
-        console.warn('[Stash] AI failed:', e.message);
+      }
+
+      if (tweet.taggingStatus === TAG_STATUS.PENDING && !tweet.taggingError) {
+        console.log('[Stash] Calling AI...');
+        try {
+          const analysis = await analyzePost(tweet.text, settings);
+          if (analysis) {
+            tweet.tags = analysis.tags;
+            tweet.topics = analysis.topics || [];
+            tweet.category = analysis.category;
+            tweet.summary = analysis.summary;
+            tweet.taggingStatus = TAG_STATUS.OK;
+            tweet.taggingError = null;
+            tweet.taggingAttempts = (tweet.taggingAttempts || 0) + 1;
+            tweet.lastTaggingAt = new Date().toISOString();
+            await clearFailureBurst();
+            console.log('[Stash] AI updated:', analysis.category, analysis.topics);
+          }
+        } catch (e) {
+          const code = e.code || 'unknown';
+          tweet.taggingStatus = code === 'local_offline' ? TAG_STATUS.PENDING : TAG_STATUS.FAILED;
+          tweet.taggingError = `${code}: ${(e.message || '').slice(0, 200)}`;
+          tweet.taggingAttempts = (tweet.taggingAttempts || 0) + 1;
+          tweet.lastTaggingAt = new Date().toISOString();
+          console.warn('[Stash] AI failed:', code, e.message);
+          await recordTaggingFailure(tweet.taggingError);
+        }
       }
     }
+
+    // Persist final status
+    await saveBookmark(tweet);
 
     // Write raw .md file to vault: raw/{date}/{tweetId}.md
     if (settings.autoSaveFile) {
@@ -998,7 +1246,7 @@ async function handleBookmark(rawTweet) {
     // Always update topic registry and queue compilation (independent of file write)
     if (tweet.topics && tweet.topics.length > 0) {
       await updateTopicRegistry(tweet);
-      queueCompilation(tweet.topics);
+      await queueCompilation(tweet.topics);
     }
 
     // Update badge briefly
@@ -1014,6 +1262,190 @@ async function handleBookmark(rawTweet) {
     console.error('[X-Bookmarks] Failed to save bookmark:', e);
     return { success: false, error: e.message };
   }
+}
+
+// ---- Failure burst notification ----
+// When >=5 tagging failures happen inside a 10-minute window, surface a
+// notification so the user knows their local server died (or quota is blown)
+// without having to open the panel.
+async function recordTaggingFailure(errorMsg) {
+  const now = Date.now();
+  const r = await chrome.storage.local.get('failureBurst');
+  const burst = r.failureBurst || { count: 0, since: 0, notified: false, lastError: null };
+  const WINDOW_MS = 10 * 60 * 1000;
+  if (now - burst.since > WINDOW_MS) {
+    burst.count = 1;
+    burst.since = now;
+    burst.notified = false;
+  } else {
+    burst.count += 1;
+  }
+  burst.lastError = errorMsg;
+  if (burst.count >= 5 && !burst.notified) {
+    burst.notified = true;
+    try {
+      chrome.notifications.create(`stash-failure-${now}`, {
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: 'Stash — tagging failures',
+        message: `${burst.count} bookmarks failed tagging. ${errorMsg || 'Check your AI provider.'}`,
+        priority: 2,
+      });
+    } catch (e) { console.warn('[Stash] Notification failed:', e.message); }
+  }
+  await chrome.storage.local.set({ failureBurst: burst });
+}
+
+async function clearFailureBurst() {
+  await chrome.storage.local.set({ failureBurst: { count: 0, since: 0, notified: false, lastError: null } });
+}
+
+// ---- Reprocess failed/pending bookmarks ----
+// Iterates bookmarks whose taggingStatus is not 'ok' and retries the AI call.
+// Used by the "Retry" button in the settings UI, auto-drained after the local
+// server comes back online, and after a spending-limit reset.
+async function reprocessFailedBookmarks(opts = {}) {
+  const settings = await getSettings();
+  const bookmarks = Object.values(await getBookmarks());
+
+  // Legacy bookmarks (no taggingStatus field) count as pending if they have no tags/category.
+  const isRetryable = (b) => {
+    const status = b.taggingStatus;
+    if (opts.onlyStatus) return status === opts.onlyStatus;
+    if (status === TAG_STATUS.OK) return false;
+    if (status === TAG_STATUS.SKIPPED_DISABLED) return false;
+    if (!status) {
+      // Legacy bookmark: treat as pending only if it was never successfully tagged
+      const hasCategory = b.category && b.category !== 'Uncategorized';
+      const hasTags = b.tags && b.tags.length > 0;
+      return !hasCategory && !hasTags;
+    }
+    return true; // pending, failed, skipped_limit
+  };
+
+  const targets = bookmarks.filter(isRetryable);
+  if (targets.length === 0) return { success: true, ok: 0, failed: 0, total: 0, skipped: 0 };
+
+  // Pre-flight provider checks
+  const isLocal = settings.aiProvider === 'local';
+  if (isLocal) {
+    const ping = await pingLocalServer(settings.localServerUrl);
+    if (!ping.ok) return { success: false, error: `Local server offline at ${ping.url}`, total: targets.length };
+  } else if (!settings.apiKey) {
+    return { success: false, error: 'No API key configured', total: targets.length };
+  }
+
+  let ok = 0, failed = 0, skipped = 0;
+  const newTopics = new Set();
+
+  for (const b of targets) {
+    if (!b.text) { skipped++; continue; }
+    if (!isLocal && !(await checkSpendingLimit())) {
+      await patchBookmark(b.id, {
+        taggingStatus: TAG_STATUS.SKIPPED_LIMIT,
+        taggingError: 'spending_limit_reached',
+        lastTaggingAt: new Date().toISOString(),
+      });
+      skipped++;
+      continue;
+    }
+    try {
+      const analysis = await analyzePost(b.text, settings);
+      if (analysis) {
+        await patchBookmark(b.id, {
+          tags: analysis.tags,
+          topics: analysis.topics || [],
+          category: analysis.category,
+          summary: analysis.summary,
+          taggingStatus: TAG_STATUS.OK,
+          taggingError: null,
+          taggingAttempts: (b.taggingAttempts || 0) + 1,
+          lastTaggingAt: new Date().toISOString(),
+        });
+        if (analysis.topics) analysis.topics.forEach(t => newTopics.add(t));
+        // Update topic registry incrementally
+        await updateTopicRegistry({ ...b, topics: analysis.topics || [] });
+        ok++;
+      } else {
+        await patchBookmark(b.id, {
+          taggingStatus: TAG_STATUS.FAILED,
+          taggingError: 'empty_response',
+          taggingAttempts: (b.taggingAttempts || 0) + 1,
+          lastTaggingAt: new Date().toISOString(),
+        });
+        failed++;
+      }
+    } catch (e) {
+      const code = e.code || 'unknown';
+      const stillPending = code === 'local_offline';
+      await patchBookmark(b.id, {
+        taggingStatus: stillPending ? TAG_STATUS.PENDING : TAG_STATUS.FAILED,
+        taggingError: `${code}: ${(e.message || '').slice(0, 200)}`,
+        taggingAttempts: (b.taggingAttempts || 0) + 1,
+        lastTaggingAt: new Date().toISOString(),
+      });
+      failed++;
+      // If local went offline mid-drain, stop hammering it.
+      if (stillPending) break;
+    }
+  }
+
+  if (ok > 0) await clearFailureBurst();
+
+  // Queue compilation for any new topics that came out of the drain
+  if (newTopics.size > 0) {
+    await queueCompilation([...newTopics]);
+  }
+
+  return { success: true, ok, failed, skipped, total: targets.length };
+}
+
+async function getPipelineHealth() {
+  const bookmarks = Object.values(await getBookmarks());
+  const counts = { ok: 0, pending: 0, failed: 0, skipped_limit: 0, skipped_disabled: 0, legacy: 0 };
+  let lastFailure = null;
+  for (const b of bookmarks) {
+    const status = b.taggingStatus;
+    if (!status) {
+      const hasCategory = b.category && b.category !== 'Uncategorized';
+      const hasTags = b.tags && b.tags.length > 0;
+      if (hasCategory || hasTags) counts.ok++; else counts.legacy++;
+      continue;
+    }
+    counts[status] = (counts[status] || 0) + 1;
+    if (b.taggingError && b.lastTaggingAt && (!lastFailure || b.lastTaggingAt > lastFailure.at)) {
+      lastFailure = { at: b.lastTaggingAt, error: b.taggingError, bookmarkId: b.id };
+    }
+  }
+
+  const settings = await getSettings();
+  const provider = { name: settings.aiProvider, configured: false, reachable: null };
+  if (settings.aiProvider === 'local') {
+    provider.url = settings.localServerUrl || 'http://127.0.0.1:8080';
+    provider.configured = true;
+    const ping = await pingLocalServer(settings.localServerUrl);
+    provider.reachable = ping.ok;
+    if (!ping.ok) provider.error = ping.error;
+  } else {
+    provider.configured = !!settings.apiKey;
+    provider.reachable = provider.configured;
+  }
+
+  const compileFailures = (await chrome.storage.local.get('compileFailures')).compileFailures || {};
+  const pendingCompilationQueue = (await chrome.storage.local.get('pendingCompilationQueue')).pendingCompilationQueue || [];
+  const pendingWriteQueue = (await chrome.storage.local.get('pendingWriteQueue')).pendingWriteQueue || [];
+  const lastAiErrorRes = await chrome.storage.local.get('lastAiError');
+
+  return {
+    bookmarks: counts,
+    retryable: counts.pending + counts.failed + counts.skipped_limit + counts.legacy,
+    lastFailure,
+    lastAiError: lastAiErrorRes.lastAiError || null,
+    provider,
+    compileFailures: Object.entries(compileFailures).map(([slug, info]) => ({ slug, ...info })),
+    pendingCompilations: pendingCompilationQueue,
+    pendingWrites: pendingWriteQueue.length,
+  };
 }
 
 async function deleteBookmark(id) {
@@ -1238,6 +1670,9 @@ function formatDateSpanish(dateStr) {
 }
 
 async function callAI(prompt, settings, model) {
+  // NOTE: this helper is intentionally lenient — callers like compileTopic, askQuestion,
+  // and generateDigest already treat empty as "no content" and handle that path.
+  // But we log the error so it surfaces in pipeline health and the SW console.
   try {
     if (settings.aiProvider === 'claude') {
       return await callClaude(prompt, settings.apiKey, model);
@@ -1249,9 +1684,32 @@ async function callAI(prompt, settings, model) {
       return await callLocal(prompt, settings.localServerUrl, model);
     }
     return '';
-  } catch {
+  } catch (e) {
+    console.warn('[Stash] callAI failed:', e.code || 'unknown', e.message);
+    // Record last AI error globally so pipeline health can surface it even for
+    // non-bookmark operations (wiki compile, Q&A, digests).
+    chrome.storage.local.set({ lastAiError: { code: e.code || 'unknown', message: e.message, at: new Date().toISOString() } }).catch(() => {});
     return '';
   }
 }
+
+// ---- Service worker startup: resume persisted queues ----
+// When Chrome restarts the service worker, in-memory state (pendingTopics,
+// debounce timers) is lost. Reload from chrome.storage and schedule a drain
+// so queued compilations don't silently disappear.
+(async function resumePersistedState() {
+  try {
+    const r = await chrome.storage.local.get(['pendingCompilationQueue']);
+    const saved = r.pendingCompilationQueue || [];
+    if (saved.length > 0) {
+      pendingTopics = new Set(saved);
+      console.log('[Stash] Resuming', saved.length, 'pending compilation(s):', saved);
+      // Shorter debounce on resume — we've already waited however long Chrome kept the SW alive.
+      scheduleCompilationDrain(5000);
+    }
+  } catch (e) {
+    console.warn('[Stash] resumePersistedState failed:', e.message);
+  }
+})();
 
 console.log('[Stash] Service worker loaded');

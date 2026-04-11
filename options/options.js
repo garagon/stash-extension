@@ -170,6 +170,8 @@ document.addEventListener('DOMContentLoaded', () => {
       saveStatus.textContent = 'Saved';
       saveStatus.classList.add('visible');
       setTimeout(() => saveStatus.classList.remove('visible'), 2000);
+      // Ask the service worker to drain any bookmarks that were skipped for the spending limit.
+      chrome.runtime.sendMessage({ type: 'SETTINGS_CHANGED' }).catch(() => {});
     });
   }
 
